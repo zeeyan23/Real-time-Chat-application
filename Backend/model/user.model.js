@@ -36,10 +36,22 @@ const userSchema = new mongoose.Schema({
             ref:"User"
         }
 
-    ]
+    ],
+    created_date: {
+        type: Date,
+        default: Date.now
+    },
+    modified_date: {
+        type: Date,
+        default: Date.now
+    }
 
 });
-
+userSchema.pre('save', function(next) {
+    this.modified_date = new Date();
+    next();
+  });
+  
 
 const UserModel = mongoose.model("User", userSchema);
 export default UserModel;

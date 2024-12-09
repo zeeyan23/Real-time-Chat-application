@@ -24,9 +24,23 @@ const messageSchema = new mongoose.Schema({
     timeStamp:{
         type: Date,
         default: Date.now
-    }
+    },
+    created_date: {
+        type: Date,
+        default: Date.now
+      },
+      modified_date: {
+        type: Date,
+        default: Date.now
+      }
 
 });
+
+messageSchema.pre('save', function(next) {
+    this.modified_date = new Date();
+    next();
+  });
+  
 
 const MessageModel = mongoose.model("Message", messageSchema);
 export default MessageModel;
