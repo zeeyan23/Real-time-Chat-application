@@ -8,6 +8,10 @@ import jsonwebtoken from "jsonwebtoken";
 import dotenv from "dotenv"
 import UserModel from "./model/user.model.js";
 import MessageModel from "./model/message.model.js";
+import multer from "multer";
+import axios from "axios"
+import { Server } from "socket.io";
+import http from "http";
 
 const app = express()
 const port = 3000
@@ -29,8 +33,101 @@ try{
 }
 
 
-app.listen(port, () => {
+app.listen(port,'0.0.0.0',() => {
     console.log(`Example app listening on port ${port}`)
+});
+app.use("/files", express.static("D:/CHAT APP/Backend/files"));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
+const server = http.createServer(app); // Create HTTP server
+const io = new Server(server, {
+    cors: {
+        origin: "*", // Allow connections from any origin (configure this for production security)
+    },
+});
+
+io.on("connection", (socket) => {
+    console.log("A user connected:", socket.id);
+
+    socket.on("register", (userId) => {
+        socket.join(userId); // Join a room for the user's ID
+        console.log(`User with ID ${userId} joined room ${userId}`);
+    });
+
+    socket.on("disconnect", () => {
+        console.log("A user disconnected:", socket.id);
+    });
+});
+
+io.on("connection", (socket) => {
+    console.log("A user connected:", socket.id);
+
+    // Listen for friend request events from the client
+    socket.on("sendFriendRequest", async ({ senderId, receiverId }) => {
+        try {
+            // Add the friend request in the database
+            const sender = await UserModel.findById(senderId);
+            const receiver = await UserModel.findById(receiverId);
+
+            if (!sender || !receiver) {
+                socket.emit("error", { message: "Invalid users" });
+                return;
+            }
+
+            sender.sentFriendRequests.push(receiverId);
+            receiver.friendRequests.push(senderId);
+
+            await sender.save();
+            await receiver.save();
+
+            // Emit real-time updates to both users
+            io.to(receiverId).emit("friendRequestReceived", { senderId, senderName: sender.user_name });
+            io.to(senderId).emit("friendRequestSent", { receiverId, receiverName: receiver.user_name });
+
+            console.log(`Friend request sent from ${senderId} to ${receiverId}`);
+        } catch (error) {
+            console.error("Error sending friend request:", error);
+            socket.emit("error", { message: "Internal Server Error" });
+        }
+    });
+
+    // Listen for accept friend request events
+    socket.on("acceptFriendRequest", async ({ senderId, receiverId }) => {
+        try {
+            // Update the database
+            const sender = await UserModel.findById(senderId);
+            const receiver = await UserModel.findById(receiverId);
+
+            if (!sender || !receiver) {
+                socket.emit("error", { message: "Invalid users" });
+                return;
+            }
+
+            // Remove the request from `friendRequests` and add to `friends`
+            receiver.friendRequests = receiver.friendRequests.filter((id) => id.toString() !== senderId);
+            sender.sentFriendRequests = sender.sentFriendRequests.filter((id) => id.toString() !== receiverId);
+
+            sender.friends.push(receiverId);
+            receiver.friends.push(senderId);
+
+            await sender.save();
+            await receiver.save();
+
+            // Emit real-time updates
+            io.to(receiverId).emit("friendRequestAccepted", { senderId, senderName: sender.user_name });
+            io.to(senderId).emit("friendRequestAcceptedByReceiver", { receiverId, receiverName: receiver.user_name });
+
+            console.log(`${receiverId} accepted friend request from ${senderId}`);
+        } catch (error) {
+            console.error("Error accepting friend request:", error);
+            socket.emit("error", { message: "Internal Server Error" });
+        }
+    });
+
+    // Handle disconnect
+    socket.on("disconnect", () => {
+        console.log("User disconnected:", socket.id);
+    });
 });
 
 //API's
@@ -59,8 +156,8 @@ const createToken = (userId) =>{
 }
 // Login user
 app.post('/user_login',(req, res)=>{
-    const { email, password} = req.body;
-
+    const { email, password, expoPushToken} = req.body;
+    
     if(!email || !password){
         return res.status(400).json({message: "Please enter both email and password"})
     }
@@ -74,6 +171,12 @@ app.post('/user_login',(req, res)=>{
             return res.status(401).json({message: "Invalid Password"})
         }
 
+        if (expoPushToken) {
+            user.expoPushToken = expoPushToken;
+            user.save();
+        }
+
+
         const token= createToken(user.id);
         res.status(200).json({token})
     }).catch((error)=> {
@@ -83,17 +186,51 @@ app.post('/user_login',(req, res)=>{
 })
 
 //retrive all users
-app.get('/all_users/:userId',(req, res)=>{
+// app.get('/all_users/:userId', async (req, res) => {
+//     const currentUser = req.params.userId;
 
-    const currentUser = req.params.userId;
+//     try {
+//         const user = await UserModel.findById(currentUser);
 
-    UserModel.find({_id:{$ne: currentUser}}).then((users)=>{
-        res.status(200).json({users})
-    }).catch((error)=> {
-        console.log("Error in finding the users", error);
-        res.status(500).json({message: "Error in finding the users"})
-    })
-})
+//         if (!user) {
+//             return res.status(404).json({ message: "User not found" });
+//         }
+//         const friendsIds = user.friends.map(friend => friend.toString());
+//         const users = await UserModel.find({
+//             _id: { $nin: [...friendsIds, currentUser] }
+//         });
+
+//         res.status(200).json({ users });
+//     } catch (error) {
+//         console.log("Error in finding the users", error);
+//         res.status(500).json({ message: "Error in finding the users" });
+//     }
+// });
+
+app.get("/all_users/:userId", (req, res) => {
+    const loggedInUserId = req.params.userId;
+  
+    UserModel.find({ _id: { $ne: loggedInUserId } })
+      .then((users) => {
+        res.status(200).json(users);
+      })
+      .catch((err) => {
+        console.log("Error retrieving users", err);
+        res.status(500).json({ message: "Error retrieving users" });
+      });
+  });
+
+// app.get('/all_users/:userId',(req, res)=>{
+
+//     const currentUser = req.params.userId;
+
+//     UserModel.find({_id:{$ne: currentUser}}).then((users)=>{
+//         res.status(200).json({users})
+//     }).catch((error)=> {
+//         console.log("Error in finding the users", error);
+//         res.status(500).json({message: "Error in finding the users"})
+//     })
+// })
 
 //send friend request
 app.post('/friend-request/',async (req, res)=>{
@@ -102,11 +239,11 @@ app.post('/friend-request/',async (req, res)=>{
 
     try {
         await UserModel.findByIdAndUpdate(selectedUserId,{
-            $push: {friendRequests : currentUserId}
+            $addToSet: {friendRequests : currentUserId}
         });
 
         await UserModel.findByIdAndUpdate(currentUserId,{
-            $push: {sentFriendRequests : selectedUserId}
+            $addToSet: {sentFriendRequests : selectedUserId}
         });
 
         res.sendStatus(200);
@@ -151,3 +288,359 @@ app.post('/accept-friend-request/accept',async (req, res)=>{
         res.sendStatus(500);
     }
 })
+
+//Get all friends to chat
+app.get('/get-all-friends/:userId',async (req, res)=>{
+    try {
+        const {userId} = req.params;
+        const users = await UserModel.findById(userId).populate("friends","user_name email") .lean()       
+
+        const friends = users.friends;
+        res.json(friends)
+
+    } catch (error) {
+        console.log(error)
+        res.sendStatus(500);
+    }
+})
+
+//End point to save message
+const storage = multer.diskStorage({
+    destination: function (req, file, cb){
+        cb(null,'files/')
+    },
+    filename: function (req, file, cb){
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9)
+        cb(null,uniqueSuffix + '-' + file.originalname);
+    }
+})
+// const upload = multer ({storage :storage});
+const upload = multer ({storage :storage,
+    fileFilter: (req, file, cb) => {
+        const fileTypes = /jpeg|jpg|png|mp4|mov/; // Add video formats
+        const extName = fileTypes.test(file.mimetype);
+        if (extName) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only images and videos are allowed!'), false);
+        }
+    },
+});
+
+
+app.post('/messages',upload.single("file"),async (req, res)=>{
+    try {
+        const {senderId, recepientId, messageType, message, duration, videoName, replyMessage} = req.body;
+        
+        const newMessage = new MessageModel({
+            senderId,
+            recepientId,
+            messageType,
+            message,
+            timeStamp:new Date(),
+            replyMessage: replyMessage ? replyMessage : null,
+            imageUrl:messageType ==='image' ? req.file?.path : null,
+            videoUrl: messageType === 'video' ? req.file?.path.replace(/\\/g, '/') : null,
+            duration :messageType === 'video' ? Math.floor(duration / 1000) : null,
+            videoName : messageType === 'video' ? videoName : null
+        })
+        await newMessage.save();
+
+        const recipient = await UserModel.findById(recepientId);
+        if (!recipient || !recipient.expoPushToken) {
+            return res.status(404).json({ message: "Recipient not found or push token missing." });
+        }
+        const sender = await UserModel.findById(senderId);
+        const userName = sender.user_name;
+        const notificationData = {
+            to: recipient.expoPushToken, // Push token of the recipient
+            sound: 'default',
+            title: `${messageType} Message from ${sender.user_name}`,
+            body: messageType === 'text' ? message : `You received a ${messageType}.`,
+            data: { senderId, recepientId, messageType, userName}, // Optional custom data
+        };
+
+        // Send push notification using Expo Push Notification service
+        await axios.post('https://exp.host/--/api/v2/push/send', notificationData, {
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        });
+
+        res.status(200).json({message:"Message sent successfully and notification delivered."})
+
+    } catch (error) {
+        console.log(error)
+        res.sendStatus(500);
+    }
+})
+
+//fetch messages
+app.get('/get-messages/:senderId/:recepientId',async (req, res)=>{
+    try {
+        const {senderId, recepientId} = req.params;
+
+        const message = await MessageModel.find({
+            $or:[
+                {senderId : senderId, recepientId: recepientId},
+                {senderId : recepientId, recepientId: senderId},
+            ]
+        })
+        .populate("senderId", "_id user_name")
+        .populate("replyMessage");
+        res.json({message})
+
+    } catch (error) {
+        console.log(error)
+        res.sendStatus(500);
+    }
+})
+
+// app.get('/user/:userId',async (req, res)=>{
+//     try {
+//         const {userId} = req.params;
+//         const recepientId = await UserModel.findById(userId) 
+//         res.json(recepientId);
+
+//     } catch (error) {
+//         console.log(error)
+//         res.sendStatus(500);
+//     }
+// })
+
+
+//delete messages
+app.post('/deleteMessages/',async (req, res)=>{
+    try {
+        const {messages} = req.body;
+        
+        if(!Array.isArray(messages) || messages.length === 0){
+            return res.status(400).json({message: "invalid req body"});
+        }
+        await MessageModel.deleteMany({_id:{$in: messages}})       
+
+        res.json({messages : "Message deleted successfully"})
+
+    } catch (error) {
+        console.log(error)
+        res.sendStatus(500);
+    }
+})
+
+app.get('/friend-requests/sent/:userId',async (req, res)=>{
+
+    try {
+        const {userId} = req.params;
+        const user = await UserModel.findById(userId).populate("sentFriendRequests","user_name email").lean();
+
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        const sentFriendRequests = user.sentFriendRequests;
+        res.json(sentFriendRequests);
+    } catch (error) {
+        console.log("error",error);
+        res.status(500).json({ error: "Internal Server" });
+    }
+})
+
+app.get('/friend-requests/received/:userId',async (req, res)=>{
+
+    try {
+        const {userId} = req.params;
+        const user = await UserModel.findById(userId).populate("friendRequests","user_name email").lean();
+
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        const sentFriendRequestsReceived = user.friendRequests;
+        res.json(sentFriendRequestsReceived);
+    } catch (error) {
+        console.log("error",error);
+        res.status(500).json({ error: "Internal Server" });
+    }
+})
+
+app.get('/friends/:userId',async (req, res)=>{
+
+    try {
+        const {userId} = req.params;
+        UserModel.findById(userId).populate("friends").then((user)=>{
+            if(!user){
+                res.status(404).json({message: "user not found"});
+            }
+
+            const friendIds= user.friends.map((friend)=> friend._id);
+            res.status(200).json(friendIds);
+        });
+    } catch (error) {
+        res.sendStatus(500);
+    }
+})
+
+app.post('/messages/forward', async (req, res) => {
+    const { senderId, recipientId, messageIds } = req.body;
+    
+
+    try {
+      // Validate IDs
+      if (!mongoose.Types.ObjectId.isValid(senderId) || !mongoose.Types.ObjectId.isValid(recipientId)) {
+        return res.status(400).json({ error: 'Invalid senderId or recipientId' });
+      }
+      if (!messageIds || messageIds.length === 0) {
+        return res.status(400).json({ error: 'No messages selected for forwarding' });
+      }
+  
+      // Retrieve original messages
+      const originalMessages = await MessageModel.find({ _id: { $in: messageIds } });
+  
+      if (originalMessages.length === 0) {
+        return res.status(404).json({ error: 'No messages found' });
+      }
+  
+      // Prepare forwarded messages
+      const forwardedMessages = originalMessages.map((msg) => ({
+        senderId,
+        recepientId: recipientId,
+        messageType: msg.messageType,
+        message: msg.message,
+        imageUrl: msg.imageUrl,
+        videoUrl: msg.videoUrl,
+        videoName: msg.videoName,
+        duration: msg.duration,
+        replyMessage: msg.replyMessage,
+      }));
+  
+      // Log the prepared messages
+      console.log('Forwarded Messages:', forwardedMessages);
+  
+      // Save forwarded messages
+      await MessageModel.insertMany(forwardedMessages);
+  
+      res.status(200).json({ message: 'Messages forwarded successfully' });
+    } catch (error) {
+      console.error('Error forwarding messages:', error);
+      res.status(500).json({ error: 'Error forwarding messages' });
+    }
+  });
+  
+  app.patch('/star-messages', async (req, res) => {
+    try {
+        const { messageIds, starredBy } = req.body;
+    
+        // Update all messages with the given IDs and set the starredBy field
+        const updatedMessages = await MessageModel.updateMany(
+          { _id: { $in: messageIds } }, // Match messages with any of the provided message IDs
+          { starredBy }, // Update the starredBy field
+          { new: true } // Return the updated documents
+        );
+    
+        if (updatedMessages.nModified === 0) {
+          return res.status(404).json({ message: 'No messages found to update' });
+        }
+    
+        return res.status(200).json({ message: 'Messages updated successfully' });
+      } catch (error) {
+        console.error('Error updating starred messages:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+      }
+  });
+
+  app.get('/get-starred-messages/:userId', async (req, res) => {
+    try {
+      const userId = req.params.userId;
+  
+      // Find messages where starredBy field matches the userId
+      const starredMessages = await MessageModel.find({ starredBy: userId })
+        .populate('senderId', 'user_name')
+        .populate('starredBy', 'user_name')  // Populate user_name from starredBy
+        .populate('recepientId', 'user_name') // Populate user_name from recepientId
+        .sort({ created_date: -1 });
+  
+      if (starredMessages.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No starred messages found for the user",
+        });
+      }
+  
+      res.status(200).json(starredMessages);
+    } catch (error) {
+      console.error("Error fetching messages:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch messages",
+        error: error.message,
+      });
+    }
+  });
+  
+  app.get('/get-starred-message/:id/:userId/', async (req, res) => {
+    try {
+      const {id, userId} = req.params;
+      const messageExists = await MessageModel.exists({ _id: id,"starredBy": userId });
+      console.log("messageExists",messageExists)
+  
+      if (messageExists) {
+        return res.status(200).json({ exists: true, message: "Message exists in the database." });
+      } else {
+        return res.status(404).json({ exists: false, message: "Message not found." });
+      }
+    } catch (error) {
+      console.error("Error checking message existence:", error);
+      res.status(500).json({ exists: false, error: "Internal server error" });
+    }
+  });
+
+  app.delete('/delete-starred-message/:userId/:id', async (req, res) => {
+    try {
+      const {id, userId} = req.params;
+  
+      const result = await MessageModel.updateOne(
+        { _id: id },
+        { $pull: { starredBy: userId } }
+      );
+  
+      if (result.modifiedCount === 0) {
+        return res.status(404).json({ message: "Message not found or user was not starred." });
+      }
+  
+      res.status(200).json({ message: "Starred message removed successfully." });
+    } catch (error) {
+        console.error("Error removing starred message:", error);
+        res.status(500).json({ message: "Internal server error." });
+    }
+  });
+
+  app.post('/clear-chat', async (req, res) => {
+    try {
+        const {userId, otherUserId} = req.body;
+        // Update all messages between these two users
+        
+        const result = await MessageModel.updateMany(
+          {
+            
+            $or: [
+              { senderId: userId, recepientId: otherUserId },
+              { senderId: otherUserId, recepientId: userId },
+            ],
+          },
+          { $addToSet: { clearedBy: userId } } // Add the userId to the clearedBy array
+        );
+    
+        const updatedMessages = await MessageModel.find({
+            $or: [
+              { senderId: userId, recepientId: otherUserId },
+              { senderId: otherUserId, recepientId: userId }
+            ],
+            clearedBy: { $ne: userId } // Exclude messages cleared by this user
+          });
+          res.status(200).json(updatedMessages);
+      } catch (error) {
+        console.error('Error clearing chat:', error);
+        res.status(500).json({ message: 'Internal server error.' });
+      }
+  });
+  

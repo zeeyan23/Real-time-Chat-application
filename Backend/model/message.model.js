@@ -20,6 +20,7 @@ const messageSchema = new mongoose.Schema({
     message:String,
     imageUrl:String,
     videoUrl: String, 
+    videoName: String,
     duration: Number,
     timeStamp:{
         type: Date,
@@ -32,7 +33,20 @@ const messageSchema = new mongoose.Schema({
       modified_date: {
         type: Date,
         default: Date.now
-      }
+      },
+      replyMessage: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Message",
+        default: null,
+      },
+      starredBy:[{
+        type:mongoose.Schema.Types.ObjectId,
+        ref:"User"
+      }],
+      clearedBy:[{
+        type:mongoose.Schema.Types.ObjectId
+      }]
+
 
 });
 

@@ -17,6 +17,7 @@ const userSchema = new mongoose.Schema({
     image:{
         type:String
     },
+    expoPushToken:String,
     friendRequests:[
         {
             type:mongoose.Schema.Types.ObjectId,
