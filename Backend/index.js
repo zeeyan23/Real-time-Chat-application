@@ -15,8 +15,7 @@ import { Server } from "socket.io";
 import http from "http";
 import { createServer } from 'node:http';
 import { ObjectId } from 'mongodb';
-
-
+import path from "path"
 
 const app = express()
 const server = createServer(app);
@@ -210,7 +209,7 @@ app.get('/get-friend-request/:userId',async (req, res)=>{
 
     try {
         const {userId} = req.params;
-        const users = await UserModel.findById(userId).populate("friendRequests","user_name email") .lean()       
+        const users = await UserModel.findById(userId).populate("friendRequests","user_name email image") .lean()       
 
         const friendRequests = users.friendRequests;
         res.json(friendRequests)
@@ -279,10 +278,9 @@ app.get('/has-friends/:userId',async (req, res)=>{
 app.get('/get-all-friends/:userId',async (req, res)=>{
     try {
         const {userId} = req.params;
-        const users = await UserModel.findById(userId).populate("friends","user_name email")
-          .populate("groups","groupName groupMembers").populate("pinnedChats", "_id").lean()       
+        const users = await UserModel.findById(userId).populate("friends","user_name email image")
+          .populate("groups","groupName groupMembers image").populate("pinnedChats", "_id").lean()       
 
-        console.log(users.groups)
         res.json({
           friends: users.friends,
           pinnedChats: users.pinnedChats,
@@ -323,9 +321,7 @@ app.post('/messages',upload.single("file"),async (req, res)=>{
     try {
         const {senderId, recepientId, messageType, message, duration, videoName, replyMessage, fileName, 
           imageViewOnce,videoViewOnce, groupId, isGroupChat} = req.body;
-
         const actualRecepientId = isGroupChat ? groupId : recepientId;
-        console.log("actualRecepientId",actualRecepientId)
         const newMessage = new MessageModel({
             senderId,
             recepientId : actualRecepientId,
@@ -431,7 +427,7 @@ app.get('/get-messages/:senderId/:recepientId',async (req, res)=>{
                 {senderId : recepientId, recepientId: senderId},
             ]
         })
-        .populate("senderId", "_id user_name")
+        .populate("senderId", "_id user_name image")
         .populate("replyMessage");
         res.json({message})
 
@@ -446,7 +442,7 @@ app.get("/get-group-messages/:groupId", async (req, res) => {
     const { groupId } = req.params;
     const messages = await MessageModel.find({
       recepientId: groupId, // Only filter by groupId (recepientId)
-    }).populate("senderId", "_id user_name").populate("replyMessage");;
+    }).populate("senderId", "_id user_name image").populate("replyMessage");;
     res.status(200).json({ message: messages });
   } catch (error) {
     console.log("Error:", error);
@@ -459,10 +455,8 @@ app.get("/get-groupInfo/:groupId", async (req, res) => {
     const { groupId } = req.params;
 
     const groupInfo = await GroupModel.findById(groupId)
-      .populate("groupMembers", "user_name email") // Populate specific fields
-      .populate("groupAdmin", "user_name email");
-
-      console.log(groupInfo)
+      .populate("groupMembers", "user_name email image")
+      .populate("groupAdmin", "user_name email image");
     if (!groupInfo) {
       return res.status(404).json({ error: "Group not found" });
     }
@@ -834,11 +828,115 @@ app.post('/messages/forward', async (req, res) => {
 });
   
 
+app.get("/user-data/:userId", async(req, res) => {
+  const loggedInUserId = req.params.userId;
+
+  try {
+    // Fetch user data from the database
+    const user = await UserModel.findById(loggedInUserId).select("user_name email image");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Send the user data as the response
+    res.status(200).json(user);
+  } catch (error) {
+    console.error("Error fetching user data:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+app.patch("/users/update", async (req, res) => {
+  const { userId, user_name, email } = req.body;
+
+  try {
+    // Find user by ID and update the specified fields
+    const updateFields = {};
+    if (user_name) updateFields.user_name = user_name;
+    if (email) updateFields.email = email;
+
+    const updatedUser = await UserModel.findByIdAndUpdate(
+      userId,
+      { $set: updateFields },
+      { new: true } // Return the updated document
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.status(200).json({
+      message: "User updated successfully",
+      data: updatedUser,
+    });
+  } catch (error) {
+    console.error("Error updating user:", error);
+    res.status(500).json({ message: "Internal Server Error", error });
+  }
+});
+
+app.patch('/update-userdata/:userId', upload.single('file'), async (req, res) => {
+  try {
+      const userId = req.params.userId;
+      const filePath = req.file?.path;
+      if (!filePath) {
+          return res.status(400).json({ message: 'No file uploaded' });
+      }
+
+      const updatedUser = await UserModel.findByIdAndUpdate(userId, {
+          image: filePath,  
+      }, { new: true });
+
+      const savedMessage = await updatedUser.save();
+      if (!updatedUser) {
+          return res.status(404).json({ message: 'User not found' });
+      }
+
+      // Send a response with the updated user data
+      res.status(200).json({
+          message: 'User data updated successfully',
+          user: updatedUser
+      });
+  } catch (error) {
+      console.error('Error updating user data:', error);
+      res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+app.patch('/update-groupData/:userId', upload.single('file'), async (req, res) => {
+  try {
+      const userId = req.params.userId;
+      const filePath = req.file?.path;
+      if (!filePath) {
+          return res.status(400).json({ message: 'No file uploaded' });
+      }
+
+      const updatedGroup = await GroupModel.findByIdAndUpdate(userId, {
+          image: filePath,  
+      }, { new: true });
+
+      const savedMessage = await updatedGroup.save();
+      if (!updatedGroup) {
+          return res.status(404).json({ message: 'User not found' });
+      }
+
+      // Send a response with the updated user data
+      res.status(200).json({
+          message: 'Group data updated successfully',
+          user: updatedGroup
+      });
+  } catch (error) {
+      console.error('Error updating user data:', error);
+      res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
 
 //   app.delete('/accept-friend-request/remove', async (req, res) => {
 //     try {
-//         const userId = new ObjectId("676687f69c120a4cba2c52da");
-//         const friendIdToRemove = new ObjectId("6766789c9c01a2601d81bc57");
+//         const userId = new ObjectId("6766d8963cc557866f307da9");
+//         const friendIdToRemove = new ObjectId("676688039c120a4cba2c52dc");
 
 //         const result = await UserModel.updateOne(
 //             { _id: userId },
